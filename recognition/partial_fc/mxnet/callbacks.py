@@ -92,19 +92,20 @@ class CallBackCenterSave(object):
 
 
 class CallBackModelSave(object):
-    def __init__(self, symbol, model, prefix, rank):
+    def __init__(self, symbol, model, prefix, rank, save_interval=10000):
         self.symbol = symbol
         self.model = model
         self.prefix = prefix
         self.max_step = config.max_update
         self.rank = rank
+        self.save_interval = save_interval
 
     def __call__(self, param):
         num_update = param.num_update
 
         if num_update in [
-            self.max_step - 10,
-        ] or (num_update % 10000 == 0 and num_update > 0):
+                self.max_step - 10,
+        ] or (num_update % self.save_interval == 0 and num_update > 0):
 
             # params
             arg, aux = self.model.get_export_params()
@@ -121,12 +122,12 @@ class CallBackModelSave(object):
 
             if self.rank == 0:
                 mx.model.save_checkpoint(prefix=self.prefix + "_average",
-                                         epoch=0,
+                                         epoch=num_update / self.save_interval,
                                          symbol=_sym,
                                          arg_params=new_arg,
                                          aux_params=new_aux)
                 mx.model.save_checkpoint(prefix=self.prefix,
-                                         epoch=0,
+                                         epoch=num_update / self.save_interval,
                                          symbol=_sym,
                                          arg_params=arg,
                                          aux_params=aux)
@@ -170,13 +171,10 @@ class CallBackLogging(object):
         self.loss_metric = MetricNdarray()
         t = time.localtime()
 
-        if self.rank == 0:
-            self.summary_writer = SummaryWriter(logdir=os.path.join(
-                self.prefix_dir, "log_tensorboard",
-                "%s_%s_%s" % (str(t.tm_mon), str(t.tm_mday), str(t.tm_hour))),
-                verbose=False)
-        else:
-            time.sleep(2)
+        self.summary_writer = SummaryWriter(logdir=os.path.join(
+            self.prefix_dir, "log_tensorboard",
+            "%s_%s_%s" % (str(t.tm_mon), str(t.tm_mday), str(t.tm_hour))),
+                                            verbose=False)
 
     def __call__(self, param):
         """Callback to Show speed
@@ -193,7 +191,8 @@ class CallBackLogging(object):
             if count % self.frequent == 0:
                 nd.waitall()
                 try:
-                    speed = self.frequent * self.batch_size / (time.time() - self.tic)
+                    speed = self.frequent * self.batch_size / (time.time() -
+                                                               self.tic)
                     speed_total = speed * self.size
                 except ZeroDivisionError:
                     speed = float('inf')
@@ -201,20 +200,21 @@ class CallBackLogging(object):
 
                 # summary loss
                 loss_scalar = self.loss_metric.get()
-
-                if self.rank == 0:
-                    self.summary_writer.add_scalar(tag="loss", value=loss_scalar, global_step=param.num_update)
+                self.summary_writer.add_scalar(tag="loss",
+                                               value=loss_scalar,
+                                               global_step=param.num_update)
                 loss_str_format = "[%d][%s]:%.2f " % (param.num_epoch, "loss",
                                                       loss_scalar)
                 self.loss_metric.reset()
-
+                # summary speed
+                self.summary_writer.add_scalar(tag="speed",
+                                               value=speed,
+                                               global_step=param.num_update)
+                self.summary_writer.flush()
                 if self.rank == 0:
-                    self.summary_writer.add_scalar(tag="speed", value=speed, global_step=param.num_update)
-                    self.summary_writer.flush()
                     logging.info(
                         "Iter:%d Rank:%.2f it/sec Total:%.2f it/sec %s",
                         param.num_update, speed, speed_total, loss_str_format)
-
                 self.tic = time.time()
         else:
             self.init = True
