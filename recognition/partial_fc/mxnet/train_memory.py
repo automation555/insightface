@@ -1,3 +1,10 @@
+"""
+Author: {Xiang An, XuHan Zhu, Yang Xiao} in DeepGlint,
+Partial FC: Training 10 Million Identities on a Single Machine
+See the original paper:
+https://arxiv.org/abs/2010.05222
+"""
+
 import argparse
 import logging
 import os
@@ -32,6 +39,7 @@ os.environ['HOROVOD_NUM_NCCL_STREAMS'] = "2"
 os.environ['MXNET_HOROVOD_NUM_GROUPS'] = "16"
 os.environ['MXNET_EXEC_BULK_EXEC_MAX_NODE_TRAIN_FWD'] = "999"
 os.environ['MXNET_EXEC_BULK_EXEC_MAX_NODE_TRAIN_BWD'] = "25"
+
 
 
 def parse_args():
@@ -98,26 +106,24 @@ def train_net():
     # We equally store the class centers (softmax linear transformation matrix) on all GPUs in order.
     num_local = (config.num_classes + size - 1) // size
     num_sample = int(num_local * config.sample_ratio)
-    memory_bank = MemoryBank(
-        num_sample=num_sample,
-        num_local=num_local,
-        rank=rank,
-        local_rank=local_rank,
-        embedding_size=config.embedding_size,
-        prefix=prefix_dir,
-        gpu=True)
+    memory_bank = MemoryBank(num_sample=num_sample,
+                             num_local=num_local,
+                             rank=rank,
+                             local_rank=local_rank,
+                             embedding_size=config.embedding_size,
+                             prefix=prefix_dir,
+                             gpu=True)
 
     if config.debug:
         train_iter = DummyIter(config.batch_size, data_shape, 1000 * 10000)
     else:
-        train_iter = FaceImageIter(
-            batch_size=config.batch_size,
-            data_shape=data_shape,
-            path_imgrec=config.rec,
-            shuffle=True,
-            rand_mirror=True,
-            context=rank,
-            context_num=size)
+        train_iter = FaceImageIter(batch_size=config.batch_size,
+                                   data_shape=data_shape,
+                                   path_imgrec=config.rec,
+                                   shuffle=True,
+                                   rand_mirror=True,
+                                   context=rank,
+                                   context_num=size)
     train_data_iter = mx.io.PrefetchingIter(train_iter)
 
     esym, save_symbol = get_symbol_embedding()
@@ -152,7 +158,7 @@ def train_net():
     if not config.debug and local_rank == 0:
         cb_vert = CallBackVertification(esym, train_module)
     cb_speed = CallBackLogging(rank, size, prefix_dir)
-    cb_save = CallBackModelSave(save_symbol, train_module, prefix, rank)
+    cb_save = CallBackModelSave(save_symbol, train_module, prefix, rank, save_interval=config.verbose)
     cb_center_save = CallBackCenterSave(memory_bank)
 
     def call_back_fn(params):
@@ -162,11 +168,10 @@ def train_net():
         cb_center_save(params)
         cb_save(params)
 
-    train_module.fit(
-        train_data_iter,
-        optimizer_params=backbone_kwargs,
-        initializer=mx.init.Normal(0.1),
-        batch_end_callback=call_back_fn)
+    train_module.fit(train_data_iter,
+                     optimizer_params=backbone_kwargs,
+                     initializer=mx.init.Normal(0.1),
+                     batch_end_callback=call_back_fn)
 
 
 if __name__ == '__main__':
